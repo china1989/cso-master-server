@@ -3,8 +3,10 @@
 #include "usermanager.h"
 #include "udp_server.h"
 #include <iostream>
+#include <mutex>
 
 ServerConsole serverConsole;
+static mutex consoleMutex;
 
 ServerConsole::ServerConsole() {
 	_running = false;
@@ -94,45 +96,50 @@ void ServerConsole::Log(PrefixType prefixType, const string& text) {
 }
 
 void ServerConsole::Print(PrefixType prefixType, const string& text, bool logToFile) {
-	string prefix;
+	string output;
+	{
+		lock_guard<mutex> lock(consoleMutex);
 
-	switch (prefixType) {
-		case Info: {
-			SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-			prefix = INFO_PREFIX;
-			break;
+		string prefix;
+
+		switch (prefixType) {
+			case Info: {
+				SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+				prefix = INFO_PREFIX;
+				break;
+			}
+			case Warn: {
+				SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+				prefix = WARN_PREFIX;
+				break;
+			}
+			case Error: {
+				SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_INTENSITY);
+				prefix = ERROR_PREFIX;
+				break;
+			}
+			case Fatal: {
+				SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED);
+				prefix = FATAL_PREFIX;
+				break;
+			}
+			case Debug: {
+				SetConsoleTextAttribute(_consoleOutput, FOREGROUND_INTENSITY);
+				prefix = DEBUG_PREFIX;
+				break;
+			}
+			default: {
+				SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+				break;
+			}
 		}
-		case Warn: {
-			SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-			prefix = WARN_PREFIX;
-			break;
-		}
-		case Error: {
-			SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_INTENSITY);
-			prefix = ERROR_PREFIX;
-			break;
-		}
-		case Fatal: {
-			SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED);
-			prefix = FATAL_PREFIX;
-			break;
-		}
-		case Debug: {
-			SetConsoleTextAttribute(_consoleOutput, FOREGROUND_INTENSITY);
-			prefix = DEBUG_PREFIX;
-			break;
-		}
-		default: {
-			SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-			break;
-		}
+
+		output = format("[ {} ]{}{}", _currentTimeStr, prefix, text);
+
+		cout << output;
+
+		SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
 	}
-
-	const string& output = format("[ {} ]{}{}", _currentTimeStr, prefix, text);
-
-	cout << output;
-
-	SetConsoleTextAttribute(_consoleOutput, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
 
 	if (logToFile) {
 		log(output);
@@ -151,7 +158,13 @@ void ServerConsole::StartRead() {
 		}
 		else if (command == "users") {
 			string usersList;
-			const vector<User*>& users = userManager.GetUsers();
+			vector<User*> users = userManager.GetUsers();
+
+			users.erase(remove_if(
+				users.begin(), users.end(),
+				[](User* user) {
+					return (user == NULL || user->GetConnection() == NULL);
+				}), users.end());
 
 			Print(PrefixType::Info, format("[ ServerConsole ] Connected users: {}\n", users.size()));
 			Print(PrefixType::Info, "[ ServerConsole ] UserID, UserName, IP, Status\n");

@@ -142,7 +142,7 @@ public:
 			return pointer(new TCPConnection::Packet(source, connection, buffer));
 		}
 
-		const TCPConnection::pointer GetConnection() const noexcept {
+		const TCPConnection::pointer& GetConnection() const noexcept {
 			return _connection;
 		}
 
@@ -416,12 +416,15 @@ public:
 		}
 
 		void Send() {
+			if (_connection == NULL) {
+				return;
+			}
+
+			_sequence = _connection->GetOutgoingSequence();
+			_connection->SetOutgoingSequence(++_sequence);
+
 			WriteHeader();
-#ifdef NO_SSL
-			_connection->WritePacket(_buffer, true);
-#else
 			_connection->WritePacket(_buffer);
-#endif
 		}
 
 	private:
@@ -488,7 +491,7 @@ public:
 	}
 
 	void Start(PacketHandler&& packetHandler, ErrorHandler&& errorHandler);
-	void WritePacket(const vector<unsigned char>& buffer, bool noSSL = false);
+	void WritePacket(const vector<unsigned char>& buffer);
 	void DisconnectClient(bool eraseConnection = true);
 	void DisconnectClient(boost::system::error_code ec);
 	bool SetupDecryptCipher(CipherMethod method);
@@ -500,17 +503,19 @@ private:
 	bool decrypt(vector<unsigned char>& buffer);
 
 	void asyncRead();
-	void onRead(boost::system::error_code ec, size_t bytesTransferred);
+	void onReadHeader(const boost::system::error_code& ec, size_t bytesTransferred);
+	void onReadBody(const boost::system::error_code& ec, size_t bytesTransferred, TCPConnection::Packet::pointer packet);
 
 	bool encrypt(vector<unsigned char>& buffer);
 
-	void asyncWrite(bool noSSL = false);
-	void onWrite(boost::system::error_code ec, size_t bytesTransferred, vector<unsigned char> buffer);
+	void asyncWrite();
+	void onWrite(const boost::system::error_code& ec, size_t bytesTransferred, vector<unsigned char> originalBuffer);
 
 private:
 	boost::asio::ssl::stream<boost::asio::ip::tcp::socket> _sslStream;
 	string _ipAddress;
 
+	mutex _outgoingMutex;
 	queue<vector<unsigned char>> _outgoingPackets;
 	unsigned char _outgoingSequence = 0;
 	boost::asio::streambuf _streamBuf { PACKET_HEADER_SIZE + UINT16_MAX };

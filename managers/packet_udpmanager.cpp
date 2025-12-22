@@ -5,9 +5,18 @@
 Packet_UdpManager packet_UdpManager;
 
 void Packet_UdpManager::ParsePacket_Udp(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_UdpManager ] Client ({}) has sent Packet_Udp, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_UdpManager ] Client ({}) has sent Packet_Udp, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 

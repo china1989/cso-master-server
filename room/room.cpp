@@ -3,6 +3,11 @@
 #include "serverconsole.h"
 
 Room::Room(unsigned short roomID, User* roomHostUser) : _roomID(roomID), _roomHostUser(roomHostUser) {
+	if (_roomHostUser == NULL) {
+		delete this;
+		return;
+	}
+
 	_roomSettings.lowFlag = ROOMSETTINGS_LFLAG_ALL;
 	_roomSettings.highFlag = ROOMSETTINGS_HFLAG_ALL;
 }
@@ -48,6 +53,10 @@ void Room::RemoveRoomUser(User* user) {
 		unsigned long userID = user->GetUserID();
 
 		for (auto& u : _roomUsers) {
+			if (u->GetConnection() == NULL) {
+				continue;
+			}
+
 			roomManager.SendRoomUserLeavePacket(u->GetConnection(), userID);
 		}
 	}
@@ -63,6 +72,10 @@ void Room::UpdateRoomHostUser(User* user) {
 	unsigned long userID = user->GetUserID();
 
 	for (auto& u : _roomUsers) {
+		if (u->GetConnection() == NULL) {
+			continue;
+		}
+
 		roomManager.SendUpdateRoomPacket(u->GetConnection(), this, ROOMLIST_FLAG_ROOMHOST);
 	}
 }

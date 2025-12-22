@@ -20,6 +20,8 @@ private:
 private:
 	thread _packetThread;
 	deque<TCPConnection::Packet::pointer> _packetQueue {};
+	condition_variable _cv;
+	mutex _queueMutex;
 	bool _running;
 };
 

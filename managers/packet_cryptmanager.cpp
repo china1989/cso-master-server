@@ -5,9 +5,18 @@
 Packet_CryptManager packet_CryptManager;
 
 void Packet_CryptManager::ParsePacket_RecvCrypt(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_CryptManager ] Client ({}) has sent Packet_RecvCrypt, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_CryptManager ] Client ({}) has sent Packet_RecvCrypt, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -15,7 +24,14 @@ void Packet_CryptManager::ParsePacket_RecvCrypt(TCPConnection::Packet::pointer p
 }
 
 void Packet_CryptManager::SendPacket_Crypt(TCPConnection::pointer connection, CipherType type, const Cipher& cipher) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Crypt });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(type);
 	packet->WriteUInt8(cipher.method);

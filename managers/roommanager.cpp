@@ -85,10 +85,14 @@ void RoomManager::SendFullRoomListPacket(TCPConnection::pointer connection) {
 }
 
 void RoomManager::SendAddRoomPacketToAll(Room* room, unsigned short flag) {
+	if (room == NULL) {
+		return;
+	}
+
 	const vector<User*>& users = userManager.GetUsers();
 
 	for (auto& user : users) {
-		if (user->GetUserStatus() != UserStatus::InLobby) {
+		if (user == NULL || user->GetUserStatus() != UserStatus::InLobby || user->GetConnection() == NULL) {
 			continue;
 		}
 
@@ -100,7 +104,7 @@ void RoomManager::SendRemoveRoomPacketToAll(unsigned short roomID) {
 	const vector<User*>& users = userManager.GetUsers();
 
 	for (auto& user : users) {
-		if (user->GetUserStatus() != UserStatus::InLobby) {
+		if (user == NULL || user->GetUserStatus() != UserStatus::InLobby || user->GetConnection() == NULL) {
 			continue;
 		}
 
@@ -109,7 +113,7 @@ void RoomManager::SendRemoveRoomPacketToAll(unsigned short roomID) {
 }
 
 void RoomManager::SendUpdateRoomPacket(TCPConnection::pointer connection, Room* room, unsigned short flag) {
-	if (connection == NULL) {
+	if (connection == NULL || room == NULL) {
 		return;
 	}
 
@@ -117,10 +121,14 @@ void RoomManager::SendUpdateRoomPacket(TCPConnection::pointer connection, Room* 
 }
 
 void RoomManager::SendUpdateRoomPacketToAll(Room* room, unsigned short flag) {
+	if (room == NULL) {
+		return;
+	}
+
 	const vector<User*>& users = userManager.GetUsers();
 
 	for (auto& user : users) {
-		if (user->GetUserStatus() != UserStatus::InLobby) {
+		if (user == NULL || user->GetUserStatus() != UserStatus::InLobby || user->GetConnection() == NULL) {
 			continue;
 		}
 

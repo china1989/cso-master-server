@@ -5,9 +5,18 @@
 Packet_HostManager packet_HostManager;
 
 void Packet_HostManager::ParsePacket_Host(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_HostManager ] Client ({}) has sent Packet_Host, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_HostManager ] Client ({}) has sent Packet_Host, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -24,7 +33,19 @@ void Packet_HostManager::ParsePacket_Host(TCPConnection::Packet::pointer packet)
 }
 
 void Packet_HostManager::SendPacket_Host_StartGame(User* user) {
-	auto packet = TCPConnection::Packet::Create(PacketSource::Server, user->GetConnection(), { (unsigned char)PacketID::Host });
+	if (user == NULL) {
+		return;
+	}
+
+	auto connection = user->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Host });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_HostType::StartGame);
 	packet->WriteUInt32_LE(user->GetUserID());
@@ -33,7 +54,14 @@ void Packet_HostManager::SendPacket_Host_StartGame(User* user) {
 }
 
 void Packet_HostManager::SendPacket_Host_JoinGame(TCPConnection::pointer connection, unsigned long userID) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Host });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_HostType::JoinGame);
 	packet->WriteUInt32_LE(userID);

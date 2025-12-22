@@ -41,7 +41,7 @@ enum Packet_RoomListType {
 class Packet_RoomManager {
 public:
 	void ParsePacket_Room(TCPConnection::Packet::pointer packet);
-	void SendPacket_RoomList_FullRoomList(TCPConnection::pointer connection, const vector<Room*>& rooms, unsigned short flag);
+	void SendPacket_RoomList_FullRoomList(TCPConnection::pointer connection, vector<Room*> rooms, unsigned short flag);
 	void SendPacket_RoomList_AddRoom(TCPConnection::pointer connection, Room* room, unsigned short flag);
 	void SendPacket_RoomList_RemoveRoom(TCPConnection::pointer connection, unsigned short roomID);
 	void SendPacket_RoomList_UpdateRoom(TCPConnection::pointer connection, Room* room, unsigned short flag);

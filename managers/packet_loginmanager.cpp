@@ -1,6 +1,5 @@
 #include "packet_loginmanager.h"
 #include "packet_charactermanager.h"
-#include "packet_cryptmanager.h"
 #include "packetmanager.h"
 #include "usermanager.h"
 #include "serverconfig.h"
@@ -10,18 +9,27 @@
 Packet_LoginManager packet_LoginManager;
 
 void Packet_LoginManager::ParsePacket_Login(TCPConnection::Packet::pointer packet) {
-	if (!packet->GetConnection()->IsVersionReceived()) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_LoginManager ] Client ({}) has sent Packet_Login, but it hasn't sent Packet_Version!\n", packet->GetConnection()->GetIPAddress()));
+	if (packet == NULL) {
 		return;
 	}
 
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	if (!connection->IsVersionReceived()) {
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_LoginManager ] Client ({}) has sent Packet_Login, but it hasn't sent Packet_Version!\n", connection->GetIPAddress()));
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (userManager.IsUserLoggedIn(user)) {
 		serverConsole.Print(PrefixType::Warn, format("[ Packet_LoginManager ] User ({}) has sent Packet_Login, but it's already logged in!\n", user->GetUserLogName()));
 		return;
 	}
 
-	serverConsole.Print(PrefixType::Info, format("[ Packet_LoginManager ] Parsing Packet_Login from client ({})\n", packet->GetConnection()->GetIPAddress()));
+	serverConsole.Print(PrefixType::Info, format("[ Packet_LoginManager ] Parsing Packet_Login from client ({})\n", connection->GetIPAddress()));
 
 	const string& userName = packet->ReadString();
 	const string& password = packet->ReadString();
@@ -30,61 +38,51 @@ void Packet_LoginManager::ParsePacket_Login(TCPConnection::Packet::pointer packe
 
 	string hardwareIDStr;
 	for (auto& c : hardwareID) {
-		hardwareIDStr += format(" {}{:X}", c < 0x10 ? "0" : "", c);
+		hardwareIDStr += format(" {:02X}", c);
 	}
 
-	serverConsole.Print(PrefixType::Info, format("[ Packet_LoginManager ] Client ({}) has sent Packet_Login - userName: {}, password: {}, hardwareID:{}, pcBang: {}\n", packet->GetConnection()->GetIPAddress(), userName, password, hardwareIDStr, pcBang));
+	serverConsole.Print(PrefixType::Info, format("[ Packet_LoginManager ] Client ({}) has sent Packet_Login - userName: {}, password: {}, hardwareID:{}, pcBang: {}\n", connection->GetIPAddress(), userName, password, hardwareIDStr, pcBang));
 
 	if (userManager.GetUsers().size() >= serverConfig.maxPlayers) {
-		packetManager.SendPacket_Reply(packet->GetConnection(), Packet_ReplyType::EXCEED_MAX_CONNECTION);
+		packetManager.SendPacket_Reply(connection, Packet_ReplyType::EXCEED_MAX_CONNECTION);
 		return;
 	}
 
 	const LoginResult& loginResult = databaseManager.Login(userName, password);
 	if (loginResult.reply > Packet_ReplyType::LoginSuccess) {
-		packetManager.SendPacket_Reply(packet->GetConnection(), loginResult.reply);
+		packetManager.SendPacket_Reply(connection, loginResult.reply);
 		return;
 	}
 
-	User* newUser = new User(packet->GetConnection(), loginResult.userID, userName);
+	User* newUser = new User(connection, loginResult.userID, userName);
 	char userResult = userManager.AddUser(newUser);
 	if (!userResult) {
 		if (userResult < 0) {
-			packetManager.SendPacket_Reply(packet->GetConnection(), Packet_ReplyType::SysError);
+			packetManager.SendPacket_Reply(connection, Packet_ReplyType::SysError);
 
 			delete newUser;
 			newUser = NULL;
 			return;
 		}
 
-		packetManager.SendPacket_Reply(newUser->GetConnection(), Packet_ReplyType::Playing);
+		packetManager.SendPacket_Reply(connection, Packet_ReplyType::Playing);
 
 		delete newUser;
 		newUser = NULL;
 		return;
 	}
 
-#ifdef NO_SSL
-	if (newUser->GetConnection()->SetupEncryptCipher(serverConfig.encryptCipherMethod)) {
-		packet_CryptManager.SendPacket_Crypt(newUser->GetConnection(), CipherType::Encrypt, newUser->GetConnection()->GetEncryptCipher());
-	}
-
-	if (newUser->GetConnection()->SetupDecryptCipher(serverConfig.decryptCipherMethod)) {
-		packet_CryptManager.SendPacket_Crypt(newUser->GetConnection(), CipherType::Decrypt, newUser->GetConnection()->GetDecryptCipher());
-	}
-#endif
-
 	char userCharacterExistsResult = newUser->IsUserCharacterExists();
 	if (!userCharacterExistsResult) {
 		if (userCharacterExistsResult < 0) {
-			packetManager.SendPacket_Reply(newUser->GetConnection(), Packet_ReplyType::SysError);
+			packetManager.SendPacket_Reply(connection, Packet_ReplyType::SysError);
 
 			userManager.RemoveUser(newUser);
 			return;
 		}
 
-		packetManager.SendPacket_Reply(newUser->GetConnection(), Packet_ReplyType::LoginSuccess);
-		packet_CharacterManager.SendPacket_Character(newUser->GetConnection());
+		packetManager.SendPacket_Reply(connection, Packet_ReplyType::LoginSuccess);
+		packet_CharacterManager.SendPacket_Character(connection);
 		return;
 	}
 

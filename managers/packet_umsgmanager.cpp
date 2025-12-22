@@ -5,9 +5,18 @@
 Packet_UMsgManager packet_UMsgManager;
 
 void Packet_UMsgManager::ParsePacket_UMsg(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_UMsgManager ] Client ({}) has sent Packet_UMsg, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_UMsgManager ] Client ({}) has sent Packet_UMsg, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -24,7 +33,14 @@ void Packet_UMsgManager::ParsePacket_UMsg(TCPConnection::Packet::pointer packet)
 }
 
 void Packet_UMsgManager::SendPacket_UMsg_ServerMessage(TCPConnection::pointer connection, Packet_UMsgType type, const string& text, const vector<string>& additionalText) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::UMsg });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(type);
 	packet->WriteString(text);

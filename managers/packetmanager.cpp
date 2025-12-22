@@ -53,13 +53,33 @@ void PacketManager::QueuePacket(TCPConnection::Packet::pointer packet) {
 		return;
 	}
 
-	serverConsole.Print(PrefixType::Info, format("[ PacketManager ] Queueing packet from client ({})\n", packet->GetConnection()->GetIPAddress()));
+	if (packet == NULL) {
+		return;
+	}
 
-	_packetQueue.push_back(packet);
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	serverConsole.Print(PrefixType::Info, format("[ PacketManager ] Queueing packet from client ({})\n", connection->GetIPAddress()));
+
+	{
+		lock_guard<mutex> lock(_queueMutex);
+		_packetQueue.push_back(packet);
+	}
+	_cv.notify_one();
 }
 
 void PacketManager::SendPacket_Reply(TCPConnection::pointer connection, Packet_ReplyType type, const vector<string>& additionalText) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Reply });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(type);
 	packet->WriteString(""); // "S_REPLY_OK"? TODO: research this
@@ -72,6 +92,10 @@ void PacketManager::SendPacket_Reply(TCPConnection::pointer connection, Packet_R
 }
 
 void PacketManager::BuildUserCharacter(TCPConnection::Packet::pointer packet, const UserCharacter& userCharacter) {
+	if (packet == NULL) {
+		return;
+	}
+
 	packet->WriteUInt16_LE(userCharacter.flag);
 
 	if (userCharacter.flag & USERCHARACTER_FLAG_UNK1) {
@@ -136,13 +160,24 @@ int PacketManager::run() {
 	try {
 		_running = true;
 		while (_running) {
-			if (_packetQueue.empty()) {
-				this_thread::yield();
-				continue;
+			vector<TCPConnection::Packet::pointer> packets;
+			{
+				unique_lock<mutex> lock(_queueMutex);
+				_cv.wait(lock, [this] { return !_packetQueue.empty() || !_running; });
+
+				if (!_running) {
+					break;
+				}
+
+				while (!_packetQueue.empty()) {
+					packets.push_back(_packetQueue.front());
+					_packetQueue.pop_front();
+				}
 			}
 
-			parsePacket(_packetQueue.front());
-			_packetQueue.pop_front();
+			for (auto& packet : packets) {
+				parsePacket(packet);
+			}
 		}
 	}
 	catch (exception& e) {
@@ -173,6 +208,15 @@ int PacketManager::shutdown() {
 }
 
 void PacketManager::parsePacket(TCPConnection::Packet::pointer packet) {
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
 	unsigned char packetID = packet->ReadUInt8();
 
 	switch ((PacketID)packetID) {
@@ -245,7 +289,7 @@ void PacketManager::parsePacket(TCPConnection::Packet::pointer packet) {
 			break;
 		}
 		default: {
-			serverConsole.Print(PrefixType::Warn, format("[ PacketManager ] Client ({}) has sent unregistered packet ID {}!\n", packet->GetConnection()->GetIPAddress(), packetID));
+			serverConsole.Print(PrefixType::Warn, format("[ PacketManager ] Client ({}) has sent unregistered packet ID {}!\n", connection->GetIPAddress(), packetID));
 			break;
 		}
 	}

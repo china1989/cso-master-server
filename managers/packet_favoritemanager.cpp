@@ -5,9 +5,18 @@
 Packet_FavoriteManager packet_FavoriteManager;
 
 void Packet_FavoriteManager::ParsePacket_Favorite(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_FavoriteManager ] Client ({}) has sent Packet_Favorite, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_FavoriteManager ] Client ({}) has sent Packet_Favorite, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -91,7 +100,14 @@ void Packet_FavoriteManager::ParsePacket_Favorite(TCPConnection::Packet::pointer
 }
 
 void Packet_FavoriteManager::SendPacket_Favorite_UserBuyMenu(TCPConnection::pointer connection, const vector<BuyMenu>& userBuyMenus) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Favorite });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_FavoriteType::UserBuyMenu);
 
@@ -107,7 +123,14 @@ void Packet_FavoriteManager::SendPacket_Favorite_UserBuyMenu(TCPConnection::poin
 }
 
 void Packet_FavoriteManager::SendPacket_Favorite_UserBookMark(TCPConnection::pointer connection, const vector<BookMark>& userBookMarks) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Favorite });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_FavoriteType::UserBookMark);
 

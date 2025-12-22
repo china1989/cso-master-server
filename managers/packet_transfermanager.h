@@ -7,7 +7,7 @@ public:
 	void ParsePacket_RequestTransfer(TCPConnection::Packet::pointer packet);
 
 private:
-	void sendPacket_Transfer(User* user, unsigned long ip, unsigned short port);
+	void sendPacket_Transfer(TCPConnection::pointer connection, unsigned long ip, unsigned short port, const string& authToken);
 };
 
 extern Packet_TransferManager packet_TransferManager;

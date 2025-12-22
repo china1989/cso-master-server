@@ -128,9 +128,11 @@ public:
 
 	char CreateUserCharacter(const string& nickName) const noexcept;
 	UserCharacterResult GetUserCharacter(unsigned short flag) const noexcept;
+	char CreateUserBuymenus() const noexcept;
+	char CreateUserBookmarks() const noexcept;
 	char AddUserSession() const noexcept;
 	void RemoveUserSession() const noexcept;
-	char AddUserTransfer(unsigned char serverID, unsigned char channelID) const noexcept;
+	char AddUserTransfer(const string& authToken, unsigned char serverID, unsigned char channelID) const noexcept;
 	void RemoveUserTransfer() const noexcept;
 	char IsUserCharacterExists() const noexcept;
 	bool SaveUserOption(const vector<unsigned char>& userOption) const noexcept;

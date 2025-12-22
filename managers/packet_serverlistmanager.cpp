@@ -6,9 +6,18 @@
 Packet_ServerListManager packet_ServerListManager;
 
 void Packet_ServerListManager::ParsePacket_RequestServerList(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_ServerListManager ] Client ({}) has sent Packet_RequestServerList, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_ServerListManager ] Client ({}) has sent Packet_RequestServerList, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -25,11 +34,18 @@ void Packet_ServerListManager::ParsePacket_RequestServerList(TCPConnection::Pack
 
 	serverConsole.Print(PrefixType::Info, format("[ Packet_ServerListManager ] User ({}) has sent Packet_RequestServerList\n", user->GetUserLogName()));
 
-	SendPacket_ServerList(user->GetConnection(), serverConfig.serverList);
+	SendPacket_ServerList(connection, serverConfig.serverList);
 }
 
 void Packet_ServerListManager::SendPacket_ServerList(TCPConnection::pointer connection, const vector<Server>& servers) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::ServerList });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8((unsigned char)servers.size());
 
@@ -52,7 +68,14 @@ void Packet_ServerListManager::SendPacket_ServerList(TCPConnection::pointer conn
 }
 
 void Packet_ServerListManager::SendPacket_Lobby_FullUserList(TCPConnection::pointer connection, const vector<GameUser>& gameUsers) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Lobby });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_LobbyType::FullUserList);
 	packet->WriteUInt16_LE((unsigned short)gameUsers.size());
@@ -65,7 +88,14 @@ void Packet_ServerListManager::SendPacket_Lobby_FullUserList(TCPConnection::poin
 }
 
 void Packet_ServerListManager::SendPacket_Lobby_AddUser(TCPConnection::pointer connection, const GameUser& gameUser) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Lobby });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_LobbyType::AddUser);
 	buildGameUser(packet, gameUser);
@@ -74,7 +104,14 @@ void Packet_ServerListManager::SendPacket_Lobby_AddUser(TCPConnection::pointer c
 }
 
 void Packet_ServerListManager::SendPacket_Lobby_RemoveUser(TCPConnection::pointer connection, unsigned long userID) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Lobby });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_LobbyType::RemoveUser);
 	packet->WriteUInt32_LE(userID);
@@ -83,6 +120,10 @@ void Packet_ServerListManager::SendPacket_Lobby_RemoveUser(TCPConnection::pointe
 }
 
 void Packet_ServerListManager::buildGameUser(TCPConnection::Packet::pointer packet, const GameUser& gameUser) {
+	if (packet == NULL || gameUser.user == NULL) {
+		return;
+	}
+
 	packet->WriteUInt32_LE(gameUser.user->GetUserID());
 	packet->WriteString(gameUser.user->GetUserName());
 	packetManager.BuildUserCharacter(packet, gameUser.userCharacter);

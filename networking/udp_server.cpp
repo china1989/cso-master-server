@@ -6,10 +6,16 @@
 
 UDPServer udpServer;
 
+UDPPacket::UDPPacket(boost::asio::ip::udp::endpoint endpoint, vector<unsigned char> buffer) : _endpoint(endpoint), _buffer(buffer) {
+	_readOffset = 0;
+	_writeOffset = (int)_buffer.size();
+}
+
 UDPServer::UDPServer() : _socket(_ioContext, NULL) {
 	_port = 0;
-	_readOffset = 0;
 	_recvBuffer = {};
+	_pendingGoodbyePackets = 0;
+	_isShuttingDown = false;
 }
 
 UDPServer::~UDPServer() {
@@ -49,30 +55,6 @@ void UDPServer::Stop() {
 	shutdown();
 }
 
-bool UDPServer::IsServerChannelOnline(unsigned char serverID, unsigned char channelID) {
-	auto key = make_pair(serverID, channelID);
-	auto promise = make_shared<std::promise<bool>>();
-	{
-		lock_guard<mutex> lock(_heartbeatMutex);
-		_heartbeatPromises[key] = promise;
-	}
-
-	auto future = promise->get_future();
-	if (future.wait_for(5000ms) == future_status::ready) {
-		{
-			lock_guard<mutex> lock(_heartbeatMutex);
-			_heartbeatPromises.erase(key);
-		}
-		return future.get();
-	}
-
-	{
-		lock_guard<mutex> lock(_heartbeatMutex);
-		_heartbeatPromises.erase(key);
-	}
-	return false;
-}
-
 void UDPServer::SendNumPlayersPacketToAll(unsigned short numPlayers) {
 	for (auto& server : serverConfig.serverList) {
 		for (auto& channel : server.channels) {
@@ -81,23 +63,24 @@ void UDPServer::SendNumPlayersPacketToAll(unsigned short numPlayers) {
 			}
 
 			if (channel.isOnline) {
-				boost::asio::ip::udp::endpoint endpoint = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port);
+				UDPPacket* packet = new UDPPacket(boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port), { UDP_SERVER_PACKET_SIGNATURE });
 
-				auto message = make_shared<vector<unsigned char>>();
-				message->push_back(UDP_SERVER_PACKET_SIGNATURE);
-				message->push_back(serverConfig.serverID);
-				message->push_back(serverConfig.channelID);
-				message->push_back(ServerPacketType::NUMPLAYERS);
-				message->push_back((unsigned char)numPlayers);
-				message->push_back(numPlayers >> 8);
+				packet->WriteUInt8(serverConfig.serverID);
+				packet->WriteUInt8(serverConfig.channelID);
+				packet->WriteUInt8(ServerPacketType::NUMPLAYERS);
+				packet->WriteUInt16_LE(numPlayers);
 
-				_socket.async_send_to(boost::asio::buffer(*message), endpoint, boost::bind(&UDPServer::handleSend, this, message, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+				SendPacket(packet, true);
 			}
 		}
 	}
 }
 
 void UDPServer::OnSecondTick() {
+	if (_isShuttingDown) {
+		return;
+	}
+
 	for (auto& server : serverConfig.serverList) {
 		for (auto& channel : server.channels) {
 			if (server.id == serverConfig.serverID && channel.id == serverConfig.channelID) {
@@ -132,6 +115,28 @@ void UDPServer::OnSecondTick() {
 	}
 }
 
+void UDPServer::SendPacket(UDPPacket* packet, bool isServer) {
+	if (packet == NULL) {
+		return;
+	}
+
+	bool queueIdle = false;
+	if (isServer) {
+		lock_guard<mutex> lock(_serverOutgoingMutex);
+		queueIdle = _serverOutgoingQueue.empty();
+		_serverOutgoingQueue.push(packet);
+	}
+	else {
+		lock_guard<mutex> lock(_clientOutgoingMutex);
+		queueIdle = _clientOutgoingQueue.empty();
+		_clientOutgoingQueue.push(packet);
+	}
+
+	if (queueIdle) {
+		isServer ? handleOutgoingServerPacket(packet) : handleOutgoingClientPacket(packet);
+	}
+}
+
 int UDPServer::run() {
 	serverConsole.Print(PrefixType::Info, "[ UDPServer ] Thread starting!\n");
 
@@ -154,9 +159,9 @@ int UDPServer::shutdown() {
 		if (_udpServerThread.joinable()) {
 			serverConsole.Print(PrefixType::Info, "[ UDPServer ] Shutting down!\n");
 
+			_isShuttingDown = true;
 			sendGoodbytePacketToAll();
-			_ioContext.stop();
-			_udpServerThread.detach();
+			_udpServerThread.join();
 		}
 	}
 	catch (exception& e) {
@@ -168,59 +173,93 @@ int UDPServer::shutdown() {
 }
 
 void UDPServer::startReceive() {
+	if (_isShuttingDown) {
+		return;
+	}
+
 	_socket.async_receive_from(boost::asio::buffer(_recvBuffer), _endpoint, boost::bind(&UDPServer::handleReceive, this, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
 }
 
 void UDPServer::handleReceive(const boost::system::error_code& ec, size_t bytes_transferred) {
 	if (!ec || ec == boost::asio::error::message_size) {
-		_readOffset = 0;
+		vector<unsigned char> buffer(_recvBuffer.begin(), _recvBuffer.begin() + bytes_transferred);
+		UDPPacket* packet = new UDPPacket(_endpoint, buffer);
 
-		unsigned char signature = ReadUInt8();
+		startReceive();
+
+		unsigned char signature = packet->ReadUInt8();
 
 		switch (signature) {
 			case UDP_CLIENT_PACKET_SIGNATURE: {
-				handleClientPacket(bytes_transferred);
+				bool queueIdle = false;
+				{
+					lock_guard<mutex> lock(_clientIncomingMutex);
+					queueIdle = _clientIncomingQueue.empty();
+					_clientIncomingQueue.push(packet);
+				}
+
+				if (queueIdle) {
+					handleIncomingClientPacket(packet);
+				}
 				break;
 			}
 			case UDP_SERVER_PACKET_SIGNATURE: {
-				handleServerPacket(bytes_transferred);
+				bool queueIdle = false;
+				{
+					lock_guard<mutex> lock(_serverIncomingMutex);
+					queueIdle = _serverIncomingQueue.empty();
+					_serverIncomingQueue.push(packet);
+				}
+
+				if (queueIdle) {
+					handleIncomingServerPacket(packet);
+				}
 				break;
 			}
 			default: {
 #ifdef _DEBUG
-				serverConsole.Log(PrefixType::Debug, format("[ UDPServer ] Client ({}) sent UDP packet with invalid signature!\n", _endpoint.address().to_string()));
+				serverConsole.Log(PrefixType::Debug, format("[ UDPServer ] Client ({}) sent UDP packet with invalid signature!\n", packet->GetEndpoint().address().to_string()));
 #endif
+				delete packet;
+				packet = NULL;
+				break;
 			}
 		}
 	}
-
-	startReceive();
+	else {
+		startReceive();
+	}
 }
 
-void UDPServer::handleSend(shared_ptr<vector<unsigned char>> message, const boost::system::error_code& ec, size_t bytes_transferred) {
-}
+void UDPServer::handleIncomingClientPacket(UDPPacket* packet) {
+	if (packet == NULL) {
+		return;
+	}
 
-void UDPServer::handleClientPacket(size_t bytes_transferred) {
-	unsigned long userID = ReadUInt32_LE();
+	unsigned long userID = packet->ReadUInt32_LE();
 
 	User* user = userManager.GetUserByUserID(userID);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Client ({}) sent UDP packet, but it's not logged in!\n", _endpoint.address().to_string()));
+		serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Client ({}) sent UDP packet, but it's not logged in!\n", packet->GetEndpoint().address().to_string()));
 		return;
 	}
 
-	if (_endpoint.address().to_string() != user->GetUserIPAddress()) {
-		serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Client ({}) sent UDP packet, but its IP address doesn't match the user's IP address: {}!\n", _endpoint.address().to_string(), user->GetUserIPAddress()));
+	if (user->GetConnection() == NULL) {
 		return;
 	}
 
-	unsigned char type = ReadUInt8();
+	if (packet->GetEndpoint().address().to_string() != user->GetUserIPAddress()) {
+		serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Client ({}) sent UDP packet, but its IP address doesn't match the user's IP address: {}!\n", packet->GetEndpoint().address().to_string(), user->GetUserIPAddress()));
+		return;
+	}
+
+	unsigned char type = packet->ReadUInt8();
 
 #ifdef _DEBUG
-	vector<unsigned char> buffer(_recvBuffer.begin(), _recvBuffer.begin() + bytes_transferred);
+	vector<unsigned char> buffer(packet->GetBuffer());
 	string bufferStr;
 	for (auto& c : buffer) {
-		bufferStr += format(" {}{:X}", c < 0x10 ? "0" : "", c);
+		bufferStr += format(" {:02X}", c);
 	}
 
 	if (type != 1) {
@@ -230,34 +269,20 @@ void UDPServer::handleClientPacket(size_t bytes_transferred) {
 
 	switch (type) {
 		case 0: {
-			unsigned char portType = ReadUInt8();
-			unsigned long localIP = ~ReadUInt32_LE();
-			unsigned short localPort = ReadUInt16_LE();
-			unsigned char retryNum = ReadUInt8();
+			unsigned char portType = packet->ReadUInt8();
+			unsigned long localIP = ~packet->ReadUInt32_LE();
+			unsigned short localPort = packet->ReadUInt16_LE();
+			unsigned char retryNum = packet->ReadUInt8();
 
-			serverConsole.Print(PrefixType::Info, format("[ UDPServer ] User ({}) sent UDP packet - userID: {}, type: {}, portType: {}, localIP: {}.{}.{}.{}, localPort: {}, retryNum: {}, externalPort: {}\n", user->GetUserLogName(), userID, type, portType, (unsigned char)localIP, (unsigned char)(localIP >> 8), (unsigned char)(localIP >> 16), (unsigned char)(localIP >> 24), localPort, retryNum, _endpoint.port()));
+			serverConsole.Print(PrefixType::Info, format("[ UDPServer ] User ({}) sent UDP packet - userID: {}, type: {}, portType: {}, localIP: {}.{}.{}.{}, localPort: {}, retryNum: {}, externalPort: {}\n", user->GetUserLogName(), userID, type, portType, (unsigned char)localIP, (unsigned char)(localIP >> 8), (unsigned char)(localIP >> 16), (unsigned char)(localIP >> 24), localPort, retryNum, packet->GetEndpoint().port()));
 
-			user->SetUserNetwork((PortType)portType, localIP, localPort, _endpoint.port());
+			user->SetUserNetwork((PortType)portType, localIP, localPort, packet->GetEndpoint().port());
 
-			auto message = make_shared<vector<unsigned char>>();
-			message->push_back(UDP_CLIENT_PACKET_SIGNATURE);
-			message->push_back(0);
-			message->push_back(1);
-
-			_socket.async_send_to(boost::asio::buffer(*message), _endpoint, boost::bind(&UDPServer::handleSend, this, message, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
-
-#ifdef _DEBUG
-			bufferStr.clear();
-			for (auto& c : *message) {
-				bufferStr += format(" {}{:X}", c < 0x10 ? "0" : "", c);
-			}
-
-			serverConsole.Print(PrefixType::Debug, format("[ UDPServer ] Sent UDP packet to user ({}):{}\n", user->GetUserLogName(), bufferStr));
-#endif
+			sendClientPacket(packet->GetEndpoint(), user->GetUserLogName());
 			break;
 		}
 		case 1: {
-			unsigned char retryNum = ReadUInt8();
+			unsigned char retryNum = packet->ReadUInt8();
 			break;
 		}
 		default: {
@@ -265,14 +290,34 @@ void UDPServer::handleClientPacket(size_t bytes_transferred) {
 			break;
 		}
 	}
+
+	delete packet;
+	packet = NULL;
+
+	UDPPacket* nextPacket = NULL;
+	{
+		lock_guard<mutex> lock(_clientIncomingMutex);
+		_clientIncomingQueue.pop();
+		if (!_clientIncomingQueue.empty()) {
+			nextPacket = _clientIncomingQueue.front();
+		}
+	}
+
+	if (nextPacket) {
+		handleIncomingClientPacket(nextPacket);
+	}
 }
 
-void UDPServer::handleServerPacket(size_t bytes_transferred) {
+void UDPServer::handleIncomingServerPacket(UDPPacket* packet) {
+	if (packet == NULL) {
+		return;
+	}
+
 	bool isServer = false;
 
 	for (auto& server : serverConfig.serverList) {
 		for (auto& channel : server.channels) {
-			if (channel.ip == _endpoint.address().to_string()) {
+			if (channel.ip == packet->GetEndpoint().address().to_string()) {
 				isServer = true;
 				break;
 			}
@@ -280,20 +325,20 @@ void UDPServer::handleServerPacket(size_t bytes_transferred) {
 	}
 
 	if (isServer) {
-		unsigned char serverID = ReadUInt8();
-		unsigned char channelID = ReadUInt8();
+		unsigned char serverID = packet->ReadUInt8();
+		unsigned char channelID = packet->ReadUInt8();
 
 		if (!serverID || serverID > serverConfig.serverList.size()) {
-			serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Server channel ({}) sent UDP packet, but its serverID is invalid!\n", _endpoint.address().to_string()));
+			serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Server channel ({}) sent UDP packet, but its serverID is invalid!\n", packet->GetEndpoint().address().to_string()));
 			return;
 		}
 
 		if (!channelID || channelID > serverConfig.serverList[serverID - 1].channels.size()) {
-			serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Server channel ({}) sent UDP packet, but its channelID is invalid!\n", _endpoint.address().to_string()));
+			serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Server channel ({}) sent UDP packet, but its channelID is invalid!\n", packet->GetEndpoint().address().to_string()));
 			return;
 		}
 
-		unsigned char type = ReadUInt8();
+		unsigned char type = packet->ReadUInt8();
 
 		switch (type) {
 			case ServerPacketType::HELLO: {
@@ -306,20 +351,11 @@ void UDPServer::handleServerPacket(size_t bytes_transferred) {
 				}
 
 				unsigned short numPlayers = (unsigned short)userManager.GetUsers().size();
-
-				auto message = make_shared<vector<unsigned char>>();
-				message->push_back(UDP_SERVER_PACKET_SIGNATURE);
-				message->push_back(serverConfig.serverID);
-				message->push_back(serverConfig.channelID);
-				message->push_back((unsigned char)numPlayers);
-				message->push_back(numPlayers >> 8);
-
-				_socket.async_send_to(boost::asio::buffer(*message), _endpoint, boost::bind(&UDPServer::handleSend, this, message, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
-
+				sendHelloAnswerPacket(packet->GetEndpoint(), numPlayers);
 				break;
 			}
 			case ServerPacketType::HELLO_ANSWER: {
-				unsigned short numPlayers = ReadUInt16_LE();
+				unsigned short numPlayers = packet->ReadUInt16_LE();
 
 				serverConfig.serverList[serverID - 1].channels[channelID - 1].isOnline = true;
 				serverConfig.serverList[serverID - 1].channels[channelID - 1].lastHeartBeat = serverConsole.GetCurrentTime();
@@ -348,25 +384,17 @@ void UDPServer::handleServerPacket(size_t bytes_transferred) {
 			}
 			case ServerPacketType::HEARTBEAT: {
 				serverConfig.serverList[serverID - 1].channels[channelID - 1].lastHeartBeat = serverConsole.GetCurrentTime();
-
-				lock_guard<mutex> lock(_heartbeatMutex);
-				auto key = make_pair(serverID, channelID);
-				auto it = _heartbeatPromises.find(key);
-				if (it != _heartbeatPromises.end()) {
-					it->second->set_value(true);
-					_heartbeatPromises.erase(it);
-				}
 				break;
 			}
 			case ServerPacketType::NUMPLAYERS: {
-				unsigned short numPlayers = ReadUInt16_LE();
+				unsigned short numPlayers = packet->ReadUInt16_LE();
 
 				serverConfig.serverList[serverID - 1].channels[channelID - 1].numPlayers = numPlayers;
 				break;
 			}
 			case ServerPacketType::DEADCHANNEL: {
-				unsigned char sID = ReadUInt8();
-				unsigned char chID = ReadUInt8();
+				unsigned char sID = packet->ReadUInt8();
+				unsigned char chID = packet->ReadUInt8();
 
 				if (!sID || sID > serverConfig.serverList.size()) {
 					serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Server channel ({}-{}) sent DEADCHANNEL UDP packet, but the received serverID is invalid!\n", serverID, channelID));
@@ -400,8 +428,100 @@ void UDPServer::handleServerPacket(size_t bytes_transferred) {
 		}
 	}
 	else {
-		serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Client ({}) sent UDP server packet, but it's not a server!\n", _endpoint.address().to_string()));
+		serverConsole.Print(PrefixType::Warn, format("[ UDPServer ] Client ({}) sent UDP server packet, but it's not a server!\n", packet->GetEndpoint().address().to_string()));
 	}
+
+	delete packet;
+	packet = NULL;
+
+	UDPPacket* nextPacket = NULL;
+	{
+		lock_guard<mutex> lock(_serverIncomingMutex);
+		_serverIncomingQueue.pop();
+		if (!_serverIncomingQueue.empty()) {
+			nextPacket = _serverIncomingQueue.front();
+		}
+	}
+
+	if (nextPacket) {
+		handleIncomingServerPacket(nextPacket);
+	}
+}
+
+void UDPServer::handleOutgoingClientPacket(UDPPacket* packet) {
+	if (packet == NULL || _isShuttingDown) {
+		return;
+	}
+
+	_socket.async_send_to(boost::asio::buffer(packet->GetBuffer()), packet->GetEndpoint(), [packet](const boost::system::error_code& ec, size_t bytesTransferred) {
+		delete packet;
+	});
+
+	UDPPacket* nextPacket = NULL;
+	{
+		lock_guard<mutex> lock(_clientOutgoingMutex);
+		_clientOutgoingQueue.pop();
+		if (!_clientOutgoingQueue.empty()) {
+			nextPacket = _clientOutgoingQueue.front();
+		}
+	}
+
+	if (nextPacket) {
+		handleOutgoingClientPacket(nextPacket);
+	}
+}
+
+void UDPServer::handleOutgoingServerPacket(UDPPacket* packet) {
+	if (packet == NULL || _isShuttingDown) {
+		return;
+	}
+
+	_socket.async_send_to(boost::asio::buffer(packet->GetBuffer()), packet->GetEndpoint(), [packet](const boost::system::error_code& ec, size_t bytesTransferred) {
+		delete packet;
+	});
+
+	UDPPacket* nextPacket = NULL;
+	{
+		lock_guard<mutex> lock(_serverOutgoingMutex);
+		_serverOutgoingQueue.pop();
+		if (!_serverOutgoingQueue.empty()) {
+			nextPacket = _serverOutgoingQueue.front();
+		}
+	}
+
+	if (nextPacket) {
+		handleOutgoingServerPacket(nextPacket);
+	}
+}
+
+void UDPServer::sendClientPacket(const boost::asio::ip::udp::endpoint& endpoint, const string& userLogName) {
+	UDPPacket* packet = new UDPPacket(endpoint, { UDP_CLIENT_PACKET_SIGNATURE });
+
+	packet->WriteUInt8(0);
+	packet->WriteUInt8(1);
+
+	SendPacket(packet);
+
+#ifdef _DEBUG
+	vector<unsigned char> buffer(packet->GetBuffer());
+	string bufferStr;
+	for (auto& c : buffer) {
+		bufferStr += format(" {:02X}", c);
+	}
+
+	serverConsole.Print(PrefixType::Debug, format("[ UDPServer ] Sent UDP packet to user ({}):{}\n", userLogName, bufferStr));
+#endif
+}
+
+void UDPServer::sendHelloAnswerPacket(const boost::asio::ip::udp::endpoint& endpoint, unsigned short numPlayers) {
+	UDPPacket* packet = new UDPPacket(endpoint, { UDP_SERVER_PACKET_SIGNATURE });
+
+	packet->WriteUInt8(serverConfig.serverID);
+	packet->WriteUInt8(serverConfig.channelID);
+	packet->WriteUInt8(ServerPacketType::HELLO_ANSWER);
+	packet->WriteUInt16_LE(numPlayers);
+
+	SendPacket(packet, true);
 }
 
 void UDPServer::sendHelloPacketToAll() {
@@ -411,20 +531,19 @@ void UDPServer::sendHelloPacketToAll() {
 				continue;
 			}
 
-			boost::asio::ip::udp::endpoint endpoint = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port);
+			UDPPacket* packet = new UDPPacket(boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port), { UDP_SERVER_PACKET_SIGNATURE });
 
-			auto message = make_shared<vector<unsigned char>>();
-			message->push_back(UDP_SERVER_PACKET_SIGNATURE);
-			message->push_back(serverConfig.serverID);
-			message->push_back(serverConfig.channelID);
-			message->push_back(ServerPacketType::HELLO);
+			packet->WriteUInt8(serverConfig.serverID);
+			packet->WriteUInt8(serverConfig.channelID);
+			packet->WriteUInt8(ServerPacketType::HELLO);
 
-			_socket.async_send_to(boost::asio::buffer(*message), endpoint, boost::bind(&UDPServer::handleSend, this, message, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+			SendPacket(packet, true);
 		}
 	}
 }
 
 void UDPServer::sendGoodbytePacketToAll() {
+	_pendingGoodbyePackets = 0;
 	for (auto& server : serverConfig.serverList) {
 		for (auto& channel : server.channels) {
 			if (server.id == serverConfig.serverID && channel.id == serverConfig.channelID) {
@@ -432,30 +551,35 @@ void UDPServer::sendGoodbytePacketToAll() {
 			}
 
 			if (channel.isOnline) {
-				boost::asio::ip::udp::endpoint endpoint = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port);
+				_pendingGoodbyePackets++;
+				UDPPacket* packet = new UDPPacket(boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port), { UDP_SERVER_PACKET_SIGNATURE });
 
-				auto message = make_shared<vector<unsigned char>>();
-				message->push_back(UDP_SERVER_PACKET_SIGNATURE);
-				message->push_back(serverConfig.serverID);
-				message->push_back(serverConfig.channelID);
-				message->push_back(ServerPacketType::GOODBYE);
+				packet->WriteUInt8(serverConfig.serverID);
+				packet->WriteUInt8(serverConfig.channelID);
+				packet->WriteUInt8(ServerPacketType::GOODBYE);
 
-				_socket.async_send_to(boost::asio::buffer(*message), endpoint, boost::bind(&UDPServer::handleSend, this, message, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+				_socket.async_send_to(boost::asio::buffer(packet->GetBuffer()), packet->GetEndpoint(), [this, packet](const boost::system::error_code& ec, size_t bytesTransferred) {
+					delete packet;
+					if (--_pendingGoodbyePackets == 0) {
+						_ioContext.stop();
+					}
+				});
 			}
 		}
+	}
+	if (_pendingGoodbyePackets == 0) {
+		_ioContext.stop();
 	}
 }
 
 void UDPServer::sendHeartbeatPacket(unsigned char serverID, unsigned char channelID) {
-	boost::asio::ip::udp::endpoint endpoint = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(serverConfig.serverList[serverID - 1].channels[channelID - 1].ip), serverConfig.serverList[serverID - 1].channels[channelID - 1].port);
+	UDPPacket* packet = new UDPPacket(boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(serverConfig.serverList[serverID - 1].channels[channelID - 1].ip), serverConfig.serverList[serverID - 1].channels[channelID - 1].port), { UDP_SERVER_PACKET_SIGNATURE });
 
-	auto message = make_shared<vector<unsigned char>>();
-	message->push_back(UDP_SERVER_PACKET_SIGNATURE);
-	message->push_back(serverConfig.serverID);
-	message->push_back(serverConfig.channelID);
-	message->push_back(ServerPacketType::HEARTBEAT);
+	packet->WriteUInt8(serverConfig.serverID);
+	packet->WriteUInt8(serverConfig.channelID);
+	packet->WriteUInt8(ServerPacketType::HEARTBEAT);
 
-	_socket.async_send_to(boost::asio::buffer(*message), endpoint, boost::bind(&UDPServer::handleSend, this, message, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+	SendPacket(packet, true);
 }
 
 void UDPServer::sendDeadChannelPacketToAll(unsigned char serverID, unsigned char channelID) {
@@ -466,17 +590,15 @@ void UDPServer::sendDeadChannelPacketToAll(unsigned char serverID, unsigned char
 			}
 
 			if (channel.isOnline) {
-				boost::asio::ip::udp::endpoint endpoint = boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port);
+				UDPPacket* packet = new UDPPacket(boost::asio::ip::udp::endpoint(boost::asio::ip::make_address(channel.ip), channel.port), { UDP_SERVER_PACKET_SIGNATURE });
 
-				auto message = make_shared<vector<unsigned char>>();
-				message->push_back(UDP_SERVER_PACKET_SIGNATURE);
-				message->push_back(serverConfig.serverID);
-				message->push_back(serverConfig.channelID);
-				message->push_back(ServerPacketType::DEADCHANNEL);
-				message->push_back(serverID);
-				message->push_back(channelID);
+				packet->WriteUInt8(serverConfig.serverID);
+				packet->WriteUInt8(serverConfig.channelID);
+				packet->WriteUInt8(ServerPacketType::DEADCHANNEL);
+				packet->WriteUInt8(serverID);
+				packet->WriteUInt8(channelID);
 
-				_socket.async_send_to(boost::asio::buffer(*message), endpoint, boost::bind(&UDPServer::handleSend, this, message, boost::asio::placeholders::error, boost::asio::placeholders::bytes_transferred));
+				SendPacket(packet, true);
 			}
 		}
 	}

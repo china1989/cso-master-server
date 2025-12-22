@@ -3,6 +3,7 @@
 #include "roommanager.h"
 #include "packetmanager.h"
 #include "packet_serverlistmanager.h"
+#include "packet_cryptmanager.h"
 #include "packet_clientcheckmanager.h"
 #include "packet_updateinfomanager.h"
 #include "packet_userstartmanager.h"
@@ -123,45 +124,58 @@ bool UserManager::SendLoginPackets(User* user, Packet_ReplyType reply) {
 		return false;
 	}
 
+	auto connection = user->GetConnection();
+	if (connection == NULL) {
+		return false;
+	}
+
 	const UserCharacterResult& userCharacterResult = user->GetUserCharacter(USERCHARACTER_FLAG_ALL);
 	if (!userCharacterResult.result) {
-		packetManager.SendPacket_Reply(user->GetConnection(), Packet_ReplyType::SysError);
+		packetManager.SendPacket_Reply(connection, Packet_ReplyType::SysError);
 
 		RemoveUser(user);
 		return false;
 	}
 
+	if (connection->SetupEncryptCipher(serverConfig.encryptCipherMethod)) {
+		packet_CryptManager.SendPacket_Crypt(connection, CipherType::Encrypt, connection->GetEncryptCipher());
+	}
+
+	if (connection->SetupDecryptCipher(serverConfig.decryptCipherMethod)) {
+		packet_CryptManager.SendPacket_Crypt(connection, CipherType::Decrypt, connection->GetDecryptCipher());
+	}
+
 	if (reply != Packet_ReplyType::NoReply) {
 		user->SetUserStatus(UserStatus::InServerList);
 
-		packetManager.SendPacket_Reply(user->GetConnection(), reply);
-		packet_ServerListManager.SendPacket_ServerList(user->GetConnection(), serverConfig.serverList);
+		packetManager.SendPacket_Reply(connection, reply);
+		packet_ServerListManager.SendPacket_ServerList(connection, serverConfig.serverList);
 		packet_UserStartManager.SendPacket_UserStart({ user, userCharacterResult.userCharacter });
 		packet_UpdateInfoManager.SendPacket_UpdateInfo({ user, userCharacterResult.userCharacter });
 
 		const vector<unsigned char>& userOption = user->GetUserOption();
 		if (!userOption.empty()) {
-			packet_OptionManager.SendPacket_Option_UserOption(user->GetConnection(), userOption);
+			packet_OptionManager.SendPacket_Option_UserOption(connection, userOption);
 		}
 
 		const vector<BuyMenu>& userBuyMenus = user->GetUserBuyMenus();
 		if (!userBuyMenus.empty()) {
-			packet_FavoriteManager.SendPacket_Favorite_UserBuyMenu(user->GetConnection(), userBuyMenus);
+			packet_FavoriteManager.SendPacket_Favorite_UserBuyMenu(connection, userBuyMenus);
 		}
 
 		const vector<BookMark>& userBookMarks = user->GetUserBookMarks();
 		if (!userBookMarks.empty()) {
-			packet_FavoriteManager.SendPacket_Favorite_UserBookMark(user->GetConnection(), userBookMarks);
+			packet_FavoriteManager.SendPacket_Favorite_UserBookMark(connection, userBookMarks);
 		}
 
-		packet_ClientCheckManager.SendPacket_ClientCheck(user->GetConnection());
+		packet_ClientCheckManager.SendPacket_ClientCheck(connection);
 	}
 	else {
 		user->SetUserStatus(UserStatus::InLobby);
 
 		SendAddUserPacketToAll(user);
-		SendFullUserListPacket(user->GetConnection());
-		roomManager.SendFullRoomListPacket(user->GetConnection());
+		SendFullUserListPacket(connection);
+		roomManager.SendFullRoomListPacket(connection);
 	}
 
 	return true;
@@ -174,7 +188,7 @@ void UserManager::SendFullUserListPacket(TCPConnection::pointer connection) {
 
 	vector<GameUser> gameUsers;
 	for (auto& user : _users) {
-		if (user->GetUserStatus() != UserStatus::InLobby) {
+		if (user == NULL || user->GetUserStatus() != UserStatus::InLobby) {
 			continue;
 		}
 
@@ -194,12 +208,11 @@ void UserManager::SendAddUserPacketToAll(User* user) {
 
 	const UserCharacterResult& userCharacterResult = user->GetUserCharacter(USERCHARACTER_FLAG_ALL);
 	if (!userCharacterResult.result) {
-		packetManager.SendPacket_Reply(user->GetConnection(), Packet_ReplyType::SysError);
 		return;
 	}
 
 	for (auto& u : _users) {
-		if (u == user || u->GetUserStatus() != UserStatus::InLobby) {
+		if (u == NULL || u == user || u->GetUserStatus() != UserStatus::InLobby || u->GetConnection() == NULL) {
 			continue;
 		}
 
@@ -215,7 +228,7 @@ void UserManager::SendRemoveUserPacketToAll(User* user) {
 	unsigned long userID = user->GetUserID();
 
 	for (auto& u : _users) {
-		if (u == user || u->GetUserStatus() != UserStatus::InLobby) {
+		if (u == NULL || u == user || u->GetUserStatus() != UserStatus::InLobby || u->GetConnection() == NULL) {
 			continue;
 		}
 

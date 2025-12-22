@@ -88,6 +88,8 @@ int main() {
 	packetManager.Start();
 	
 	SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+	string consoleTitle = format("cso-master-server | Server Channel {}-{}", serverConfig.serverID, serverConfig.channelID);
+	SetConsoleTitleA(consoleTitle.c_str());
 
 	serverConsole.StartRead();
 

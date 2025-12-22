@@ -5,9 +5,18 @@
 Packet_ShopManager packet_ShopManager;
 
 void Packet_ShopManager::ParsePacket_Shop(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_ShopManager ] Client ({}) has sent Packet_Shop, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_ShopManager ] Client ({}) has sent Packet_Shop, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -17,7 +26,7 @@ void Packet_ShopManager::ParsePacket_Shop(TCPConnection::Packet::pointer packet)
 
 	switch (type) {
 		case Packet_ShopType::Unk0: {
-			sendPacket_Shop_Unk0(user->GetConnection());
+			sendPacket_Shop_Unk0(connection);
 			break;
 		}
 		default: {
@@ -28,7 +37,14 @@ void Packet_ShopManager::ParsePacket_Shop(TCPConnection::Packet::pointer packet)
 }
 
 void Packet_ShopManager::sendPacket_Shop_Unk0(TCPConnection::pointer connection) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Shop });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_ShopType::Unk0);
 	packet->WriteUInt8(0); // Num. of products

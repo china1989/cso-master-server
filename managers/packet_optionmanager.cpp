@@ -5,9 +5,18 @@
 Packet_OptionManager packet_OptionManager;
 
 void Packet_OptionManager::ParsePacket_Option(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_OptionManager ] Client ({}) has sent Packet_Option, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_OptionManager ] Client ({}) has sent Packet_Option, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -49,7 +58,14 @@ void Packet_OptionManager::ParsePacket_Option(TCPConnection::Packet::pointer pac
 }
 
 void Packet_OptionManager::SendPacket_Option_UserOption(TCPConnection::pointer connection, const vector<unsigned char>& userOption) {
+	if (connection == NULL) {
+		return;
+	}
+
 	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::Option });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt8(Packet_OptionType::UserOption);
 	packet->WriteUInt16_LE((unsigned short)userOption.size());

@@ -1,6 +1,11 @@
 #include "databasemanager.h"
 
 User::User(TCPConnection::pointer connection, unsigned long userID, const string& userName) : _connection(connection), _userID(userID), _userName(userName) {
+	if (_connection == NULL) {
+		delete this;
+		return;
+	}
+
 	struct sockaddr_in addr {};
 
 	inet_pton(AF_INET, connection->GetIPAddress().c_str(), &(addr.sin_addr));
@@ -36,6 +41,14 @@ UserCharacterResult User::GetUserCharacter(unsigned short flag) const noexcept {
 	return databaseManager.GetUserCharacter(_userID, flag);
 }
 
+char User::CreateUserBuymenus() const noexcept {
+	return databaseManager.CreateUserBuymenus(_userID);
+}
+
+char User::CreateUserBookmarks() const noexcept {
+	return databaseManager.CreateUserBookmarks(_userID);
+}
+
 char User::AddUserSession() const noexcept {
 	return databaseManager.AddUserSession(_userID);
 }
@@ -44,12 +57,12 @@ void User::RemoveUserSession() const noexcept {
 	databaseManager.RemoveUserSession(_userID);
 }
 
-char User::AddUserTransfer(unsigned char serverID, unsigned char channelID) const noexcept {
-	return databaseManager.AddUserTransfer(_userName, _connection->GetIPAddress(), serverID, channelID);
+char User::AddUserTransfer(const string& authToken, unsigned char serverID, unsigned char channelID) const noexcept {
+	return databaseManager.AddUserTransfer(_userID, authToken, serverID, channelID);
 }
 
 void User::RemoveUserTransfer() const noexcept {
-	databaseManager.RemoveUserTransfer(_userName);
+	databaseManager.RemoveUserTransfer(_userID);
 }
 
 char User::IsUserCharacterExists() const noexcept {

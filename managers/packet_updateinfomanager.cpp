@@ -6,9 +6,18 @@
 Packet_UpdateInfoManager packet_UpdateInfoManager;
 
 void Packet_UpdateInfoManager::ParsePacket_UpdateInfo(TCPConnection::Packet::pointer packet) {
-	User* user = userManager.GetUserByConnection(packet->GetConnection());
+	if (packet == NULL) {
+		return;
+	}
+
+	auto connection = packet->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	User* user = userManager.GetUserByConnection(connection);
 	if (!userManager.IsUserLoggedIn(user)) {
-		serverConsole.Print(PrefixType::Warn, format("[ Packet_UpdateInfoManager ] Client ({}) has sent Packet_UpdateInfo, but it's not logged in!\n", packet->GetConnection()->GetIPAddress()));
+		serverConsole.Print(PrefixType::Warn, format("[ Packet_UpdateInfoManager ] Client ({}) has sent Packet_UpdateInfo, but it's not logged in!\n", connection->GetIPAddress()));
 		return;
 	}
 
@@ -36,7 +45,19 @@ void Packet_UpdateInfoManager::ParsePacket_UpdateInfo(TCPConnection::Packet::poi
 }
 
 void Packet_UpdateInfoManager::SendPacket_UpdateInfo(const GameUser& gameUser) {
-	auto packet = TCPConnection::Packet::Create(PacketSource::Server, gameUser.user->GetConnection(), { (unsigned char)PacketID::UpdateInfo });
+	if (gameUser.user == NULL) {
+		return;
+	}
+
+	auto connection = gameUser.user->GetConnection();
+	if (connection == NULL) {
+		return;
+	}
+
+	auto packet = TCPConnection::Packet::Create(PacketSource::Server, connection, { (unsigned char)PacketID::UpdateInfo });
+	if (packet == NULL) {
+		return;
+	}
 
 	packet->WriteUInt32_LE(gameUser.user->GetUserID());
 	packetManager.BuildUserCharacter(packet, gameUser.userCharacter);
